@@ -1,0 +1,23 @@
+rules:
+  - id: diploma-node-no-eval
+    message: Avoid eval/new Function in server or client code. Use safe parsing or explicit dispatch instead.
+    severity: ERROR
+    languages: [javascript, typescript]
+    patterns:
+      - pattern-either:
+          - pattern: eval($X)
+          - pattern: new Function(...)
+    metadata:
+      category: security
+      confidence: HIGH
+      cwe: "CWE-95"
+
+  - id: diploma-express-disable-powered-by
+    message: Express should disable the X-Powered-By header to reduce framework fingerprinting.
+    severity: WARNING
+    languages: [javascript, typescript]
+    pattern: |
+      express()
+    metadata:
+      category: hardening
+      recommendation: "Call app.disable('x-powered-by') during application initialization."

@@ -1,0 +1,14 @@
+format: json
+severity:
+  - CRITICAL
+  - HIGH
+  - MEDIUM
+ignore-unfixed: true
+vuln-type:
+  - os
+  - library
+scanners:
+  - vuln
+  - secret
+  - misconfig
+exit-code: 0

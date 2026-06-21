@@ -1,0 +1,6 @@
+# ZAP baseline rule policy for diploma staging.
+# Format: <plugin id>\t<action>\t<reason>
+# Actions: IGNORE, WARN, FAIL. Keep HIGH findings as FAIL by default.
+10020	WARN	Missing anti-clickjacking header is tracked but does not block staging in baseline mode.
+10021	WARN	X-Content-Type-Options header is tracked for hardening.
+10035	WARN	Strict-Transport-Security requires HTTPS termination on the VPS/reverse proxy.

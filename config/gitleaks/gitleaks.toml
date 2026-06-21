@@ -1,0 +1,13 @@
+title = "Diploma DevSecOps Gitleaks policy"
+
+[allowlist]
+description = "Allow only documentation placeholders and intentionally fake examples."
+regexes = [
+  '''EXAMPLE_[A-Z0-9_]+''',
+  '''changeme''',
+  '''dummy-token'''
+]
+paths = [
+  '''docs/.*''',
+  '''README.md'''
+]

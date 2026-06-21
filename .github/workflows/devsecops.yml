@@ -1,0 +1,442 @@
+name: DevSecOps Secure Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: devsecops-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "22"
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  APP_PORT: "3000"
+  STAGING_URL: ${{ vars.STAGING_URL }}
+  SECURITY_GATE_CRITICAL_MAX: "0"
+  SECURITY_GATE_HIGH_MAX: "0"
+  SECURITY_GATE_MEDIUM_MAX: "20"
+
+permissions:
+  contents: read
+  packages: write
+  security-events: write
+  actions: read
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  build-test:
+    name: Build and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run application tests
+        run: |
+          npm test --if-present
+          npm run lint --if-present
+
+      - name: Save npm package metadata
+        run: |
+          mkdir -p results
+          node -e "const p=require('./package.json'); console.log(JSON.stringify({name:p.name,version:p.version,engines:p.engines||{}}, null, 2))" > results/package-metadata.json
+
+      - name: Upload build-test artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-test-results
+          path: results/
+          if-no-files-found: ignore
+
+  sast-codeql:
+    name: SAST - CodeQL JavaScript/TypeScript
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: javascript-typescript
+          queries: security-and-quality
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v4
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:javascript-typescript"
+
+  sast-semgrep:
+    name: SAST - Semgrep rules
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Semgrep
+        run: python3 -m pip install --upgrade semgrep
+
+      - name: Run Semgrep
+        run: |
+          mkdir -p results
+          semgrep scan \
+            --config p/owasp-top-ten \
+            --config p/javascript \
+            --config config/semgrep/semgrep.yml \
+            --sarif --output results/semgrep.sarif . || true
+          semgrep scan \
+            --config p/owasp-top-ten \
+            --config p/javascript \
+            --json --output results/semgrep.json . || true
+
+      - name: Upload Semgrep SARIF to GitHub Code Scanning
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: results/semgrep.sarif
+          category: semgrep
+
+      - name: Upload Semgrep artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: semgrep-results
+          path: results/
+          if-no-files-found: ignore
+
+  secrets:
+    name: Security Checks - secrets in repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository with history
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: config/gitleaks/gitleaks.toml
+          GITLEAKS_REPORT_FORMAT: json
+          GITLEAKS_REPORT_PATH: results/gitleaks.json
+        continue-on-error: true
+
+      - name: Upload Gitleaks artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gitleaks-results
+          path: results/
+          if-no-files-found: ignore
+
+  sca-sbom:
+    name: SCA and SBOM - npm dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run npm audit
+        run: |
+          mkdir -p results
+          npm audit --json > results/npm-audit.json || true
+          npm audit --audit-level=high || true
+
+      - name: Generate CycloneDX SBOM
+        run: |
+          mkdir -p results
+          npx --yes @cyclonedx/cyclonedx-npm --output-file results/bom.cdx.json --output-format JSON
+
+      - name: Upload SCA and SBOM artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sca-sbom-results
+          path: results/
+          if-no-files-found: ignore
+
+  container-build-scan:
+    name: Container build and image scan
+    runs-on: ubuntu-latest
+    needs: [ build-test ]
+    outputs:
+      image_ref: ${{ steps.meta.outputs.tags }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=,format=long
+            type=ref,event=branch
+            type=ref,event=pr
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Trivy image scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          format: json
+          output: results/trivy-image.json
+          vuln-type: os,library
+          severity: CRITICAL,HIGH,MEDIUM
+          ignore-unfixed: true
+        continue-on-error: true
+
+      - name: Run Trivy config and filesystem scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: json
+          output: results/trivy-fs.json
+          scanners: vuln,secret,misconfig
+          severity: CRITICAL,HIGH,MEDIUM
+        continue-on-error: true
+
+      - name: Generate Trivy SARIF for GitHub Code Scanning
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          format: sarif
+          output: results/trivy-image.sarif
+          vuln-type: os,library
+          severity: CRITICAL,HIGH,MEDIUM
+          ignore-unfixed: true
+        continue-on-error: true
+
+      - name: Upload Trivy SARIF to GitHub Code Scanning
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: results/trivy-image.sarif
+          category: trivy-image
+
+      - name: Upload container scan artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: container-scan-results
+          path: results/
+          if-no-files-found: ignore
+
+  deploy-staging:
+    name: Deploy to staging VPS
+    runs-on: ubuntu-latest
+    needs: [ container-build-scan ]
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: staging
+      url: ${{ vars.STAGING_URL }}
+    steps:
+      - name: Deploy container on VPS over SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          GHCR_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+          IMAGE: ghcr.io/${{ github.repository }}:${{ github.sha }}
+          APP_PORT: ${{ env.APP_PORT }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+          ssh "$VPS_USER@$VPS_HOST" "mkdir -p /opt/juice-shop"
+          ssh "$VPS_USER@$VPS_HOST" "cat > /opt/juice-shop/docker-compose.yml" <<EOF
+          services:
+            app:
+              image: ${IMAGE}
+              restart: unless-stopped
+              ports:
+                - "127.0.0.1:${APP_PORT}:3000"
+              environment:
+                NODE_ENV: production
+              healthcheck:
+                test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:3000/"]
+                interval: 30s
+                timeout: 5s
+                retries: 5
+          EOF
+          ssh "$VPS_USER@$VPS_HOST" "echo '$GHCR_TOKEN' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin"
+          ssh "$VPS_USER@$VPS_HOST" "cd /opt/juice-shop && docker compose pull && docker compose up -d --remove-orphans"
+
+      - name: Smoke test staging
+        run: |
+          test -n "${STAGING_URL}" || (echo "STAGING_URL repository variable is not set" && exit 1)
+          for i in {1..30}; do
+            if curl -fsS "${STAGING_URL}" >/dev/null; then
+              echo "Staging is available"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Staging did not become healthy"
+          exit 1
+
+  dast-zap:
+    name: DAST - OWASP ZAP baseline
+    runs-on: ubuntu-latest
+    needs: [ deploy-staging ]
+    if: always() && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Run ZAP baseline scan
+        run: |
+          set +e
+          mkdir -p results
+          cp config/zap/zap-rules.tsv results/zap-rules.tsv
+          docker run --rm -t \
+            -v "$(pwd)/results:/zap/wrk" \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+            -t "${STAGING_URL}" \
+            -J zap.json \
+            -r zap.html \
+            -w zap.md \
+            -c /zap/wrk/zap-rules.tsv
+          echo $? > results/zap-exit-code.txt
+          set -e
+
+      - name: Upload ZAP artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zap-results
+          path: results/
+          if-no-files-found: ignore
+
+  security-gateway:
+    name: Security Gateway - release decision
+    runs-on: ubuntu-latest
+    needs:
+      - build-test
+      - sast-codeql
+      - sast-semgrep
+      - secrets
+      - sca-sbom
+      - container-build-scan
+      - deploy-staging
+      - dast-zap
+    if: always()
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Download all security artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Run Security Gateway
+        id: gate
+        run: |
+          mkdir -p gateway
+          python3 scripts/security_gate.py \
+            --input artifacts \
+            --output-json gateway/security-gate-result.json \
+            --output-md gateway/security-gate-summary.md \
+            --critical-max "${SECURITY_GATE_CRITICAL_MAX}" \
+            --high-max "${SECURITY_GATE_HIGH_MAX}" \
+            --medium-max "${SECURITY_GATE_MEDIUM_MAX}"
+
+      - name: Upload Security Gateway decision
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-gateway-decision
+          path: gateway/
+
+      - name: Comment Security Gateway result in PR
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('gateway/security-gate-summary.md', 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body
+            });
+
+  defectdojo-upload:
+    name: Upload results to DefectDojo
+    runs-on: ubuntu-latest
+    needs: [ security-gateway ]
+    if: always() && vars.DEFECTDOJO_ENABLED == 'true'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Download all security artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Upload reports to DefectDojo
+        env:
+          DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
+          DEFECTDOJO_TOKEN: ${{ secrets.DEFECTDOJO_TOKEN }}
+          DEFECTDOJO_PRODUCT_NAME: ${{ vars.DEFECTDOJO_PRODUCT_NAME }}
+          DEFECTDOJO_ENGAGEMENT_NAME: ${{ github.ref_name }}-${{ github.run_number }}
+        run: bash scripts/defectdojo_upload.sh artifacts
