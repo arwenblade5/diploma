@@ -41,8 +41,6 @@ out/
 *.iws
 *.swp
 .ai/mcp/mcp.json
-.junie/memory/
-.junie/plans/
 
 # Branch ghpages
 assets/
