@@ -17,7 +17,7 @@ env:
   IMAGE_NAME: ${{ github.repository }}
   DOCKER_BUILD_RECORD_UPLOAD: "false"
   APP_PORT: "3000"
-  STAGING_URL: ${{ vars.STAGING_URL }}
+  STAGING_URL: "https://juice.kolobov.tech"
   SECURITY_GATE_CRITICAL_MAX: "0"
   SECURITY_GATE_HIGH_MAX: "0"
   SECURITY_GATE_MEDIUM_MAX: "20"
