@@ -15,6 +15,7 @@ env:
   NODE_VERSION: "22"
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  DOCKER_BUILD_RECORD_UPLOAD: "false"
   APP_PORT: "3000"
   STAGING_URL: ${{ vars.STAGING_URL }}
   SECURITY_GATE_CRITICAL_MAX: "0"
@@ -225,6 +226,9 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Prepare scan result directory
+        run: mkdir -p results
+
       - name: Run Trivy image scan
         uses: aquasecurity/trivy-action@master
         with:
@@ -260,7 +264,7 @@ jobs:
 
       - name: Upload Trivy SARIF to GitHub Code Scanning
         uses: github/codeql-action/upload-sarif@v4
-        if: always()
+        if: always() && hashFiles('results/trivy-image.sarif') != ''
         with:
           sarif_file: results/trivy-image.sarif
           category: trivy-image
@@ -332,7 +336,7 @@ jobs:
     name: DAST - OWASP ZAP baseline
     runs-on: ubuntu-latest
     needs: [ deploy-staging ]
-    if: always() && github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -383,6 +387,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+          pattern: "*results*"
           merge-multiple: true
 
       - name: Run Security Gateway
@@ -431,6 +436,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+          pattern: "*results*"
           merge-multiple: true
 
       - name: Upload reports to DefectDojo
