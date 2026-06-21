@@ -300,8 +300,13 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
-          ssh "$VPS_USER@$VPS_HOST" "mkdir -p /opt/juice-shop"
-          ssh "$VPS_USER@$VPS_HOST" "cat > /opt/juice-shop/docker-compose.yml" <<EOF
+
+          cat > /tmp/remote-deploy.sh <<EOF
+          set -euo pipefail
+
+          mkdir -p /opt/juice-shop
+
+          cat > /opt/juice-shop/docker-compose.yml <<COMPOSE
           services:
             app:
               image: ${IMAGE}
@@ -315,10 +320,28 @@ jobs:
                 interval: 30s
                 timeout: 5s
                 retries: 5
-          EOF
-          ssh "$VPS_USER@$VPS_HOST" "echo '$GHCR_TOKEN' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin"
-          ssh "$VPS_USER@$VPS_HOST" "cd /opt/juice-shop && docker compose pull && docker compose up -d --remove-orphans"
+          COMPOSE
 
+          echo '${GHCR_TOKEN}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+
+          cd /opt/juice-shop
+          docker compose pull
+          docker compose up -d --remove-orphans
+          docker compose ps
+          EOF
+
+          for i in {1..5}; do
+            echo "SSH deploy attempt $i"
+            if ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=3 "$VPS_USER@$VPS_HOST" "bash -s" < /tmp/remote-deploy.sh; then
+              echo "Deploy completed"
+              exit 0
+            fi
+            echo "SSH deploy attempt $i failed, retrying..."
+            sleep 10
+          done
+
+          echo "Deploy failed after retries"
+          exit 1
       - name: Smoke test staging
         run: |
           test -n "${STAGING_URL}" || (echo "STAGING_URL repository variable is not set" && exit 1)
