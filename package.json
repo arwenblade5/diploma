@@ -198,7 +198,7 @@
     "@types/semver": "^7.5.8",
     "@types/sequelize": "^4.28.20",
     "@types/serve-index": "^1.9.4",
-    "@types/sinon": "^10.0.20",
+    "@types/sinon": "^21.0.1",
     "@types/sinon-chai": "^3.2.12",
     "@types/socket.io": "^2.1.13",
     "@types/socket.io-client": "^1.4.36",
