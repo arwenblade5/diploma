@@ -1,4 +1,5 @@
-name: DevSecOps Secure Pipeline
+name: Diploma DevSecOps Security Gate
+run-name: Final DevSecOps Security Gate | ${{ github.ref_name }} | ${{ github.event_name }}
 
 on:
   push:
@@ -33,7 +34,7 @@ permissions:
 
 jobs:
   build-test:
-    name: Build and unit tests
+    name: Build and Quality Checks
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -67,7 +68,7 @@ jobs:
           if-no-files-found: ignore
 
   sast-codeql:
-    name: SAST - CodeQL JavaScript/TypeScript
+    name: SAST - CodeQL JavaScript and TypeScript
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -88,7 +89,7 @@ jobs:
           category: "/language:javascript-typescript"
 
   sast-semgrep:
-    name: SAST - Semgrep rules
+    name: SAST - Semgrep OWASP Rules
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -126,7 +127,7 @@ jobs:
           if-no-files-found: ignore
 
   secrets:
-    name: Security Checks - secrets in repository
+    name: Security Checks - Secret Scanning
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository with history
@@ -152,7 +153,7 @@ jobs:
           if-no-files-found: ignore
 
   sca-sbom:
-    name: SCA and SBOM - npm dependencies
+    name: SCA and SBOM - Dependency Analysis
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -187,7 +188,7 @@ jobs:
           if-no-files-found: ignore
 
   container-build-scan:
-    name: Container build and image scan
+    name: Container Build and Image Security Scan
     runs-on: ubuntu-latest
     needs: [ build-test ]
     outputs:
@@ -278,13 +279,13 @@ jobs:
           if-no-files-found: ignore
 
   deploy-staging:
-    name: Deploy to staging VPS
+    name: Deploy to HTTPS Staging
     runs-on: ubuntu-latest
     needs: [ container-build-scan ]
     if: github.ref == 'refs/heads/main'
     environment:
       name: staging
-      url: ${{ vars.STAGING_URL }}
+      url: https://juice.kolobov.tech
     steps:
       - name: Deploy container on VPS over SSH
         env:
@@ -356,7 +357,7 @@ jobs:
           exit 1
 
   dast-zap:
-    name: DAST - OWASP ZAP baseline
+    name: DAST - OWASP ZAP Baseline Scan
     runs-on: ubuntu-latest
     needs: [ deploy-staging ]
     if: github.ref == 'refs/heads/main'
@@ -390,7 +391,7 @@ jobs:
           if-no-files-found: ignore
 
   security-gateway:
-    name: Security Gateway - release decision
+    name: Security Gateway - Block Unsafe Release
     runs-on: ubuntu-latest
     needs:
       - build-test
@@ -432,7 +433,7 @@ jobs:
           name: security-gateway-decision
           path: gateway/
 
-      - name: Comment Security Gateway result in PR
+      - name: Comment Security Gateway release decision in PR
         if: always() && github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
@@ -447,7 +448,7 @@ jobs:
             });
 
   defectdojo-upload:
-    name: Upload results to DefectDojo
+    name: Optional Upload to DefectDojo
     runs-on: ubuntu-latest
     needs: [ security-gateway ]
     if: always() && vars.DEFECTDOJO_ENABLED == 'true'
