@@ -9,7 +9,6 @@
 - `scripts/defectdojo_upload.sh` - загрузка результатов сканирования в DefectDojo через API.
 - `config/` - политики Semgrep, Trivy, ZAP и Gitleaks.
 - `deploy/docker-compose.vps.yml` - пример развёртывания приложения на VPS.
-- `docs/` - пояснительная документация для диплома.
 
 ## Целевая архитектура
 
